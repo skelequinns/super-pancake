@@ -2,13 +2,13 @@
 #   in which case these values can be managed in the UI.
 
 # The name of the stage.
-# project_name: "Stage Template"
+project_name: "Infernal Otome Engine"
 
 # A short tagline to show in search.
-# tagline: "A base template for all stages."
+tagline: "An Otome Engine for the Below and its voracious Nobility."
 
 # 'PUBLIC', 'PRIVATE', or 'UNLISTED'.
-# visibility: 'PUBLIC'
+visibility: 'UNLISTED'
 
 # 'ADJACENT' | 'NONE' | 'COVER' | 'FULLSCREEN'
 # 'ADJACENT' is default. The frame will display on the side of the
@@ -18,14 +18,14 @@
 #   but leave the text input box.
 # 'FULLSCREEN' will make nothing below the header bar
 #   show except for your stage.
-# position: 'ADJACENT'
+position: 'ADJACENT'
 
 # Self-explanatory.
-# tags:
-#  - 'Stage'
-#  - 'Admin'
-#  - 'Template'
-#  - 'Base'
+tags:
+- 'Stage'
+- 'Otome'
+- 'Roleplay'
+- 'Romance'
 
 # The schema of any user-supplied config.
 # If your stage requires a configuration but has no
@@ -62,7 +62,7 @@ state_schema:
           type: integer
 
 # Whether to publish as 'Anonymous' instead of under your username.
-# is_anonymous: false
+is_anonymous: false
 
 # Self-explanatory.
 # ratings_disabled: false
@@ -74,10 +74,4 @@ state_schema:
 # extension_id is automatically generated on push with a new project;
 #    you should not make or set this value.
 # github_path will be added if it does not exist. It is the URL of the repo.
-
-
-github_path: 'https://github.com/skelequinns/super-pancake'
-
-
-extension_id: 'super-pancake-cc334db42398'
 
