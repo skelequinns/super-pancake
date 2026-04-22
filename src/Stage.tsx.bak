@@ -35,11 +35,9 @@ interface AnalysisHistoryEntry {
  * and restored on swipe / branch change via setState().
  */
 type MessageStateType = {
-    affection:        Record<CharacterName, number>;
-    history:          AnalysisHistoryEntry[];
-    pendingTrigger:   PendingTrigger | null; // persisted so swipes don't blow away the user's message record
-    activeSceneChars: CharacterName[];        // characters currently in-scene; pruned after ABSENCE_THRESHOLD consecutive absent turns
-    absenceCounts:    Partial<Record<CharacterName, number>>; // consecutive bot responses each char has been absent from presentChars
+    affection:      Record<CharacterName, number>;
+    history:        AnalysisHistoryEntry[];
+    pendingTrigger: PendingTrigger | null; // persisted so swipes don't blow away the user's message record
 };
 
 type ConfigType    = any;
@@ -63,19 +61,15 @@ interface AnalysisResult {
 
 /**
  * Data computed in beforePrompt, persisted in messageState so it survives swipes.
- * namedDeltas AND sceneDeltas are applied immediately (before bot responds).
- * BASE_DELTA for brand-new entrants is applied in afterResponse once we know who's in the scene.
+ * namedDeltas are applied immediately (before bot responds); BASE_DELTA for
+ * unnamed present chars is applied in afterResponse once we know who's in the scene.
  */
 interface PendingTrigger {
     messageExcerpt:   string;
     globalCategories: CategoryFire[];
-    namedDeltas:      Partial<Record<CharacterName, number>>; // deltas already applied — explicitly named chars
+    namedDeltas:      Partial<Record<CharacterName, number>>; // deltas already applied in beforePrompt
     namedChars:       CharacterName[];                        // chars explicitly named in user's message
-    sceneDeltas:       Partial<Record<CharacterName, number>>; // deltas already applied — activeSceneChars not named
-    sceneChars:        CharacterName[];                        // activeSceneChars snapshot at beforePrompt time
-    isSceneTransition: boolean;                                // user message described leaving the current location
-    travelingChars:    CharacterName[];                        // chars detected (possessive-safe) in user's transition message
-    affectionBefore:   Record<CharacterName, number>;          // snapshot before ANY deltas this exchange
+    affectionBefore:  Record<CharacterName, number>;          // snapshot before namedDeltas were applied
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -97,7 +91,6 @@ const AFFECTION_MAX   =  250;
 const MAX_DELTA       =    2;    // hard cap per character per message
 const BASE_DELTA      =    0.25; // applied to every present character every message
 const MAX_HISTORY     =   50;    // entries kept in messageState
-const ABSENCE_THRESHOLD = 2;    // consecutive absent bot responses before a char is pruned from activeSceneChars
 
 // ═══════════════════════════════════════════════════════════════
 //  TIER DEFINITIONS
@@ -328,8 +321,8 @@ const CATEGORIES: KeywordCategory[] = [
     // ── NEGATIVES FIRST ──────────────────────────────────────────────
     {
         name: 'rude', label: 'Hostile', delta: -2,
-        // If rude fires, romantic/compliment/humor/friendly cannot also fire.
-        excludes: ['romantic', 'compliment', 'humor', 'friendly'],
+        // If rude fires, romantic/compliment/humor cannot also fire.
+        excludes: ['romantic', 'compliment', 'humor'],
         patterns: [
             /\bi hate you\b/i,                      /\bi despise you\b/i,
             /\byou'?re (?:stupid|pathetic|worthless|vile|disgusting|a monster|a traitor)\b/i,
@@ -343,24 +336,25 @@ const CATEGORIES: KeywordCategory[] = [
             /\bi don'?t trust you\b/i,              /\bnever trust you\b/i,
             /\bi don'?t love you\b/i,               /\bi don'?t need you\b/i,
             /\byou don'?t matter\b/i,               /\bi'?m not yours\b/i,
-            /\bi will never be yours\b/i,           /\bi will never choose you\b/i,
+            /\bnever be yours\b/i,                  /\bi will never choose you\b/i,
             /\bi don'?t like you\b/i,
             /\bdon'?t want to (?:spend time|be) with you\b/i,
         ],
     },
     {
         name: 'dismissive', label: 'Dismissive', delta: -1,
-        excludes: ['compliment', 'humor', 'friendly'],
+        excludes: ['compliment', 'humor'],
         patterns: [
-            /\byou'?re (?:so )?boring\b/i,
+            /\byou'?re (?:so )?boring\b/i,              /\byou'?re (?:so )?predictable\b/i,
             /\byou(?:'?re| are) (?:so )?annoying\b/i,
             /\byou(?:'?re| are) (?:so )?irritating\b/i,
             /\byou(?:'?re| are) (?:so )?frustrating\b/i,
-            /\bi don'?t care about you\b/i,             /\bnot interested\b/i,
+            /\bi don'?t care\b/i,                       /\bnot interested\b/i,
             /\bi'?m indifferent\b/i,                    /\birrelevant\b/i,
             /\btired of you\b/i,                        /\bcan'?t stand you\b/i,
             /\byou'?re (?:just )?awful\b/i,             /\byou'?re (?:just )?terrible\b/i,
-            /\bi'?m not listening\b/i,                  /\bi don'?t want to hear\b/i,
+            /\bi'?m not listening\b/i,                  /\bstop talking\b/i,
+            /\bwhatever\b/i,                            /\bi don'?t want to hear\b/i,
         ],
     },
 
@@ -414,44 +408,6 @@ const CATEGORIES: KeywordCategory[] = [
         ],
     },
     {
-        name: 'friendly', label: 'Friendly', delta: 1,
-        patterns: [
-            // Greetings & warm check-ins
-            /\bgood (?:morning|afternoon|evening|day)\b/i,
-            /\bhow are you\b/i,
-            /\bhope you(?:'re| are) (?:doing )?well\b/i,
-            /\bnice to (?:see|meet) you\b/i,
-            /\bglad (?:to see you|you(?:'re| are) here|you came)\b/i,
-            /\bhappy (?:to see you|you(?:'re| are) here|you came)\b/i,
-            /\bsmile(?:s)?\b/i,
-            /\bhug(?:s|ged|ging)?\b/i,
-           // /\b\b/i,
-
-            // Offers of help or company
-            /\bcan i help(?: you)?\b/i,                 /\blet me help\b/i,
-            /\bi'?ll help(?: you)?\b/i,
-            /\bwant (?:some )?company\b/i,
-            /\bjoin me\b/i,                             /\bwalk with me\b/i,
-            /\bsit with me\b/i,                         /\bcome with me\b/i,
-            // Friendly gestures / thoughtfulness
-            /\bbrought (?:you|this|something)\b/i,
-            /\bmade (?:this |something )?for you\b/i,
-            /\bthought (?:of you|you might)\b/i,
-            // Friendship / belonging (platonic)
-            /\bwe(?:'re| are) friends\b/i,              /\bbe friends\b/i,
-            /\bmy friend\b/i,
-            /\bconsider you (?:a |my )?friend\b/i,
-            // Warm presence & enjoying company
-            /\bgood to have you\b/i,
-            /\bnice (?:talking|chatting) (?:with|to) you\b/i,
-            /\bgood (?:talking|chatting) (?:with|to) you\b/i,
-            /\benjoy (?:your )?company\b/i,
-            /\blike (?:your )?company\b/i,
-            /\bi'?m here for you\b/i,
-            /\byou'?re not alone\b/i,
-        ],
-    },
-    {
         name: 'vulnerability', label: 'Vulnerable', delta: 2,
         // No excludes — fear and pain are affection-relevant even in hostile messages.
         patterns: [
@@ -470,8 +426,8 @@ const CATEGORIES: KeywordCategory[] = [
             /\b(?:i'?m |i am |i feel )(?:so |really )?overwhelmed\b/i,
             /\bi(?:'m| am) (?:in|so much) pain\b/i,
             /\b(?:i'?m |i am |i'?ve been )(?:really )?hurt\b/i,
-            /\bcrying\b/i, /\bcries\b/i,/\bsobs\b/i, /\bsobbing\b/i,
-            /\btears (?:in my eyes|down my (?:face|cheeks)|fell|streamed|pooled)\b/i,
+            /\bcrying\b/i,                              /\bsobbing\b/i,
+            /\btears (?:in my eyes|down my (?:face|cheeks)|fell|streamed)\b/i,
             /\bweeping\b/i,
             /\bhelp (?:me|us)\b/i,                      /\bplease help\b/i,
             /\b(?:i'?m |i am )struggling\b/i,
@@ -538,60 +494,6 @@ const CATEGORIES: KeywordCategory[] = [
 ];
 
 // ═══════════════════════════════════════════════════════════════
-//  DEBUG COMMAND PARSING
-//  Typed in the chat input; intercepted before any LLM analysis.
-//
-//  Syntax:
-//    /set  [CharacterName | all]  <value>   — set affection to exact value
-//    /add  [CharacterName | all]  <value>   — add (or subtract) from affection
-//    /reset                                 — restore all to STARTING_AFFECTION
-//
-//  Examples:
-//    /set Malivorn 200
-//    /add all -50
-//    /reset
-// ═══════════════════════════════════════════════════════════════
-
-interface DebugCommand {
-    type:   'set' | 'add' | 'reset';
-    target: CharacterName | 'all';
-    value?: number;
-}
-
-function parseDebugCommand(text: string): DebugCommand | null {
-    const trimmed = text.trim();
-
-    // /reset
-    if (/^\/reset\s*$/i.test(trimmed)) {
-        return { type: 'reset', target: 'all' };
-    }
-
-    // /set [name|all] <number>
-    const setMatch = trimmed.match(/^\/set\s+(\w+)\s+(-?\d+(?:\.\d+)?)\s*$/i);
-    if (setMatch) {
-        const raw   = setMatch[1];
-        const value = parseFloat(setMatch[2]);
-        if (raw.toLowerCase() === 'all') return { type: 'set', target: 'all', value };
-        const char = CHARACTERS.find(c => c.toLowerCase() === raw.toLowerCase());
-        if (char) return { type: 'set', target: char, value };
-        return null; // unrecognised name — ignore silently
-    }
-
-    // /add [name|all] <number>
-    const addMatch = trimmed.match(/^\/add\s+(\w+)\s+(-?\d+(?:\.\d+)?)\s*$/i);
-    if (addMatch) {
-        const raw   = addMatch[1];
-        const value = parseFloat(addMatch[2]);
-        if (raw.toLowerCase() === 'all') return { type: 'add', target: 'all', value };
-        const char = CHARACTERS.find(c => c.toLowerCase() === raw.toLowerCase());
-        if (char) return { type: 'add', target: char, value };
-        return null;
-    }
-
-    return null;
-}
-
-// ═══════════════════════════════════════════════════════════════
 //  HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════
 
@@ -641,6 +543,61 @@ function analyzeText(text: string): AnalysisResult {
 }
 
 /**
+ * Compute per-character affection deltas from the user's message.
+ *
+ * - Named character: full category analysis on a context window around
+ *   the mention, plus the base delta. Result is clamped to ±MAX_DELTA.
+ * - Present but not named: base delta only (0.25).
+ *
+ * Deltas are only APPLIED in afterResponse for characters confirmed
+ * present in the bot's response.
+ */
+function computeDeltas(text: string): Partial<Record<CharacterName, number>> {
+    const deltas: Partial<Record<CharacterName, number>> = {};
+
+    for (const name of CHARACTERS) {
+        const re = new RegExp(`\\b${name}\\b`, 'gi');
+        const matches = [...text.matchAll(re)];
+
+        if (matches.length > 0) {
+            // Collect the union of all 200-char context windows around every mention,
+            // then deduplicate overlapping ranges before joining — this ensures a
+            // compliment (or any other category word) near *any* mention of the
+            // character's name contributes to their delta.
+            const WINDOW = 200;
+            const ranges: [number, number][] = matches.map(m => [
+                Math.max(0, m.index!),
+                Math.min(text.length, m.index! + name.length + WINDOW),
+            ]);
+
+            // Extend each range backwards by WINDOW and merge overlapping spans.
+            const extended: [number, number][] = ranges.map(([start, end]) => [
+                Math.max(0, start - WINDOW),
+                end,
+            ]);
+            extended.sort((a, b) => a[0] - b[0]);
+            const merged: [number, number][] = [];
+            for (const [s, e] of extended) {
+                if (merged.length > 0 && s <= merged[merged.length - 1][1]) {
+                    merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+                } else {
+                    merged.push([s, e]);
+                }
+            }
+
+            const context = merged.map(([s, e]) => text.slice(s, e)).join(' … ');
+            const result  = analyzeText(context);
+            deltas[name]  = clampDelta(result.totalDelta) + BASE_DELTA;
+        } else {
+            // Not directly addressed — base message delta only
+            deltas[name] = BASE_DELTA;
+        }
+    }
+
+    return deltas;
+}
+
+/**
  * Compute affection deltas ONLY for characters explicitly named in the user's message.
  * Uses the same multi-window context analysis as computeDeltas(), but skips characters
  * that weren't mentioned — those only ever receive BASE_DELTA (in afterResponse, once
@@ -687,84 +644,9 @@ function computeNamedDeltas(text: string): {
     return { deltas, namedChars };
 }
 
-/**
- * Detect which of the five characters appear by name in a text string.
- * Possessive-only mentions ("Beelzebub's rooms") are excluded — the name must
- * appear at least once NOT immediately followed by a possessive apostrophe-s.
- */
+/** Detect which of the five characters appear by name in a text string. */
 function detectPresentCharacters(text: string): CharacterName[] {
-    return CHARACTERS.filter(name =>
-        new RegExp(`\\b${name}\\b(?!['\\u2019]s\\b)`, 'i').test(text)
-    );
-}
-
-/**
- * Departure cues — patterns checked in a context window around each character's name.
- * A character is only considered departed if their name appears AND a nearby cue fires.
- */
-const DEPARTURE_PATTERNS: RegExp[] = [
-    /\b(?:left|departs?|departed|exits?|exited|withdrew|retreated|vanished|dismissed)\b/i,
-    /\bwalks? (?:away|out|toward the door|to the door)\b/i,
-    /\bturns? and (?:leaves?|left|goes?|went)\b/i,
-    /\bleaves? (?:the (?:room|chamber|hall|scene|throne room|study|corridor)|without)\b/i,
-    /\bno longer (?:in|present|here|with)\b/i,
-    /\bis gone\b/i,
-];
-
-/**
- * Scan a bot response for departure cues near each character's name.
- * Returns the subset of `chars` who appear to have exited the scene.
- */
-function detectDepartedCharacters(text: string, chars: CharacterName[]): CharacterName[] {
-    const departed: CharacterName[] = [];
-    const WINDOW = 180;
-
-    for (const name of chars) {
-        const re = new RegExp(`\\b${name}\\b`, 'gi');
-        const matches = [...text.matchAll(re)];
-        if (matches.length === 0) continue; // not mentioned → can't confirm departure
-
-        for (const match of matches) {
-            const start   = Math.max(0, match.index! - WINDOW);
-            const end     = Math.min(text.length, match.index! + name.length + WINDOW);
-            const context = text.slice(start, end);
-            if (DEPARTURE_PATTERNS.some(p => p.test(context))) {
-                departed.push(name);
-                break;
-            }
-        }
-    }
-    return departed;
-}
-
-/**
- * Scene-transition patterns checked against the user's message.
- * Any match means the player has moved to a new location; activeSceneChars
- * should be wiped and rebuilt from the bot's response rather than merged.
- */
-const SCENE_TRANSITION_PATTERNS: RegExp[] = [
-    // Leading / escorting away from somewhere
-    /\b(?:leads?|takes?|escorts?|guides?|walks?) (?:her|him|them|me|us) (?:from|out of|away from)\b/i,
-    // Explicit departure from a named space
-    /\b(?:leaves?|left|exits?|exited|departs?|departed) (?:the |a )?(?:room|chamber|hall(?:way)?|throne room|scene|corridor|courtyard|study|gallery|citadel)\b/i,
-    // "from the [location]" — leaving a named space
-    /\bfrom the (?:throne room|great hall|main hall|audience chamber|council chamber|chamber|room|hall(?:way)?|corridor|gallery|courtyard)\b/i,
-    // Moving into a clearly new location
-    /\binto (?:the |a )(?:hall(?:way)?|corridor|chamber|passage|wing|gallery|courtyard|citadel|keep|anteroom)\b/i,
-    // Following someone out
-    /\b(?:follows?|followed) (?:him|her|them) (?:out|away|through the door|into)\b/i,
-    // Generic walk-away
-    /\bthey (?:leave|left|exit|exited|walk away|walked away)\b/i,
-    /\bwalks? (?:her|him|them|me|us) (?:out|away|through)\b/i,
-    /\bsteps? (?:out|through|away) (?:of|from|into)\b/i,
-];
-
-/**
- * Returns true if the user's message describes leaving the current scene
- * and moving to a new location — signal to wipe activeSceneChars.
- */
-function detectSceneTransition(text: string): boolean {
-    return SCENE_TRANSITION_PATTERNS.some(p => p.test(text));
+    return CHARACTERS.filter(name => new RegExp(`\\b${name}\\b`, 'i').test(text));
 }
 
 /** Build the stageDirections string injected into the LLM prompt each turn. */
@@ -835,7 +717,7 @@ function deltaColor(delta: number): string {
 
 export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateType, ConfigType> {
 
-    /** Current affection — always reflects the latest applied state (including any named/scene deltas from beforePrompt). */
+    /** Current affection — always reflects the latest applied state (including any named deltas from beforePrompt). */
     affection: Record<CharacterName, number>;
 
     /**
@@ -853,20 +735,6 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
      */
     pendingTrigger: PendingTrigger | null;
 
-    /**
-     * Characters currently in-scene — persisted across turns.
-     * Built up from bot responses (detectPresentCharacters) and pruned by
-     * departure-cue detection OR after ABSENCE_THRESHOLD consecutive absent turns.
-     */
-    activeSceneChars: CharacterName[];
-
-    /**
-     * Consecutive bot responses each character has been absent from presentChars.
-     * Resets to 0 when a character appears. Once it reaches ABSENCE_THRESHOLD,
-     * the character is pruned from activeSceneChars.
-     */
-    absenceCounts: Partial<Record<CharacterName, number>>;
-
     /** Previous tier names — used to detect tier transitions for systemMessage. */
     prevTierNames: Record<CharacterName, string>;
 
@@ -876,7 +744,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
         // messageState.affection is always the pre-change snapshot (from beforePrompt).
         // If a pendingTrigger exists (session restored mid-exchange), re-apply namedDeltas
-        // AND sceneDeltas so the displayed affection reflects what the user already sent.
+        // so the displayed affection reflects what the user already sent.
         this.affection = messageState?.affection
             ? { ...messageState.affection }
             : { ...STARTING_AFFECTION };
@@ -885,17 +753,12 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             ? [...messageState.history]
             : [];
 
-        this.pendingTrigger   = messageState?.pendingTrigger  ?? null;
-        this.activeSceneChars = messageState?.activeSceneChars ?? [];
-        this.absenceCounts    = messageState?.absenceCounts    ?? {};
+        this.pendingTrigger = messageState?.pendingTrigger ?? null;
 
-        // If we're restoring a mid-exchange session, re-apply namedDeltas AND sceneDeltas
-        // so the HUD shows the correct (post-send) affection values.
+        // If we're restoring a mid-exchange session, re-apply the named deltas so the
+        // HUD shows the correct (post-send) affection values.
         if (this.pendingTrigger) {
             for (const [name, delta] of Object.entries(this.pendingTrigger.namedDeltas) as [CharacterName, number][]) {
-                this.affection[name] = clampAffection(this.affection[name] + delta);
-            }
-            for (const [name, delta] of Object.entries(this.pendingTrigger.sceneDeltas) as [CharacterName, number][]) {
                 this.affection[name] = clampAffection(this.affection[name] + delta);
             }
         }
@@ -932,21 +795,18 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             this.history = [...state.history];
         }
         // Restore pendingTrigger so the debug panel keeps showing the user's message record.
-        this.pendingTrigger   = state?.pendingTrigger   ?? null;
-        this.activeSceneChars = state?.activeSceneChars ?? [];
-        this.absenceCounts    = state?.absenceCounts    ?? {};
+        this.pendingTrigger = state?.pendingTrigger ?? null;
     }
 
     /**
      * Called after the user presses Send, before the LLM sees the message.
      *
      * - Runs category analysis on the full message (for the debug panel).
-     * - Computes and IMMEDIATELY APPLIES deltas for characters named in the message.
-     * - ALSO immediately applies the global content delta to any activeSceneChars who
-     *   weren't explicitly named — so third-person / unnamed-player messages still score
-     *   correctly for characters already known to be in the scene.
-     * - Brand-new entrants (not yet in activeSceneChars) receive only BASE_DELTA in
-     *   afterResponse once the bot response confirms who is present.
+     * - Computes and IMMEDIATELY APPLIES deltas for characters named in the message,
+     *   so the HUD updates before the bot begins responding.
+     * - Unnamed characters receive only BASE_DELTA later (in afterResponse) once we
+     *   know which characters are actually present in the scene.
+     * - Stores the full pendingTrigger in messageState so swipes don't erase it.
      *
      * messageState intentionally stores the PRE-CHANGE affection as the rollback
      * snapshot — beforePrompt() is called again after each swipe and re-applies.
@@ -954,77 +814,21 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     async beforePrompt(userMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
         const { content } = userMessage;
 
-        // ── DEBUG COMMAND SHORTCUT ───────────────────────────────────────
-        // Intercept /set, /add, /reset before any normal analysis.
-        // The LLM receives a neutral placeholder so it continues the scene.
-        const debugCmd = parseDebugCommand(content);
-        if (debugCmd !== null) {
-            const affectionBefore = { ...this.affection };
-            const targets: CharacterName[] = debugCmd.target === 'all' ? CHARACTERS : [debugCmd.target];
-
-            if (debugCmd.type === 'reset') {
-                for (const name of CHARACTERS) this.affection[name] = STARTING_AFFECTION[name];
-            } else if (debugCmd.type === 'set' && debugCmd.value !== undefined) {
-                for (const name of targets) this.affection[name] = clampAffection(debugCmd.value!);
-            } else if (debugCmd.type === 'add' && debugCmd.value !== undefined) {
-                for (const name of targets) this.affection[name] = clampAffection(this.affection[name] + debugCmd.value!);
-            }
-
-            // Sync prevTierNames so tier-change detection isn't polluted next real turn.
-            for (const name of CHARACTERS) {
-                this.prevTierNames[name] = getTier(this.affection[name]).name;
-            }
-            this.pendingTrigger = null;
-
-            return {
-                stageDirections: generateStageDirections(this.affection),
-                // Store pre-debug affection so a swipe re-applies correctly.
-                messageState: {
-                    affection:        affectionBefore,
-                    history:          [...this.history],
-                    pendingTrigger:   null,
-                    activeSceneChars: [...this.activeSceneChars],
-                    absenceCounts:    { ...this.absenceCounts },
-                },
-                modifiedMessage: '[DEBUG: Affection values have been adjusted. Respond briefly as the narrator — give a short, atmospheric in-world confirmation that the court\'s mood has shifted, then invite {{user}} to continue. Keep it to two or three sentences.]',
-                systemMessage:   null,
-                error:           null,
-                chatState:       null,
-            };
-        }
-        // ── END DEBUG COMMAND ────────────────────────────────────────────
-
         // Snapshot affection BEFORE changes — stored in messageState for setState() rollback.
         const affectionBefore = { ...this.affection };
 
         // Global analysis — what categories fired across the full message (debug display).
-        const globalResult      = analyzeText(content);
-        const globalDelta       = clampDelta(globalResult.totalDelta);
-        const isSceneTransition = detectSceneTransition(content);
-        // On a transition, capture who's named in the user's message (possessive-safe) as
-        // the 'traveling party' — carried into afterResponse to seed the rebuilt scene.
-        const travelingChars = isSceneTransition ? detectPresentCharacters(content) : [];
+        const globalResult = analyzeText(content);
 
         // Named-character deltas — only for chars explicitly mentioned by the user.
         const { deltas: namedDeltas, namedChars } = computeNamedDeltas(content);
 
-        // Apply named deltas immediately.
+        // Apply named deltas immediately so the HUD reflects changes before bot responds.
         for (const name of namedChars) {
             const delta = namedDeltas[name];
             if (delta !== undefined) {
                 this.affection[name] = clampAffection(this.affection[name] + delta);
             }
-        }
-
-        // Active-scene chars not named by the user → apply the global content delta now.
-        // These characters are known to be in the scene from prior bot responses, so the
-        // player's message is implicitly addressed to them even without explicit naming.
-        const sceneOnlyChars = this.activeSceneChars.filter(n => !namedChars.includes(n));
-        const sceneDeltas: Partial<Record<CharacterName, number>> = {};
-        for (const name of sceneOnlyChars) {
-            const delta = globalDelta + BASE_DELTA;
-            sceneDeltas[name] = delta;
-            this.affection[name] = clampAffection(this.affection[name] + delta);
         }
 
         // Build pendingTrigger — persisted in messageState so it survives swipes.
@@ -1033,23 +837,16 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             globalCategories: globalResult.firedCategories,
             namedDeltas,
             namedChars,
-            sceneDeltas,
-            sceneChars:        [...this.activeSceneChars],
-            isSceneTransition,
-            travelingChars,
             affectionBefore,
         };
 
         return {
             stageDirections: generateStageDirections(this.affection),
             // Store PRE-CHANGE affection so setState() rollback lands in the right place.
-            // activeSceneChars and absenceCounts are unchanged this turn — they update in afterResponse.
             messageState: {
-                affection:        affectionBefore,
-                history:          [...this.history],
-                pendingTrigger:   this.pendingTrigger,
-                activeSceneChars: [...this.activeSceneChars],
-                absenceCounts:    { ...this.absenceCounts },
+                affection:      affectionBefore,
+                history:        [...this.history],
+                pendingTrigger: this.pendingTrigger,
             },
             modifiedMessage: null,
             systemMessage:   null,
@@ -1061,89 +858,37 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     /**
      * Called after the LLM generates a response.
      *
-     * Named-character and active-scene-character deltas were already applied in beforePrompt.
-     * Here we:
-     *   1. Detect which characters appear in the bot response.
-     *   2. Detect departures — characters whose name appears near an exit cue.
-     *   3. Update activeSceneChars: add newly-detected, remove departed.
-     *   4. Apply BASE_DELTA only to brand-new entrants (chars detected now but not in
-     *      activeSceneChars at beforePrompt time and not named by the user).
+     * Named-character deltas were already applied in beforePrompt.
+     * Here we apply BASE_DELTA to characters present in the scene that were NOT
+     * explicitly named by the user (they missed the immediate update window).
+     * If no characters are detected in the response, all unnamed characters receive BASE_DELTA.
      *
-     * Builds the full AnalysisHistoryEntry, commits it to history, and clears pendingTrigger.
+     * Builds the full AnalysisHistoryEntry (combining named deltas + scene base delta),
+     * commits it to history, and clears pendingTrigger from messageState.
      */
     async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
         const { content } = botMessage;
 
-        const trigger          = this.pendingTrigger;
-        const namedChars       = trigger?.namedChars       ?? [];
-        const namedDeltas      = trigger?.namedDeltas      ?? {};
-        const sceneChars       = trigger?.sceneChars       ?? [];
-        const sceneDeltas      = trigger?.sceneDeltas      ?? {};
-        const isSceneTransition = trigger?.isSceneTransition ?? false;
-        const travelingChars    = trigger?.travelingChars    ?? [];
+        const trigger     = this.pendingTrigger;
+        const namedChars  = trigger?.namedChars  ?? [];
+        const namedDeltas = trigger?.namedDeltas  ?? {};
 
         // affectionBefore = snapshot taken in beforePrompt (before ANY deltas this exchange).
         const affectionBefore = trigger?.affectionBefore ?? { ...this.affection };
 
-        // Characters mentioned by name in the bot's response (possessive-safe).
-        const presentChars = detectPresentCharacters(content);
+        const presentChars   = detectPresentCharacters(content);
 
-        if (isSceneTransition) {
-            // Scene transition: wipe and rebuild from two sources:
-            //   1. travelingChars — characters the user named (possessive-safe) in their
-            //      transition message; they're clearly moving with {{user}}.
-            //   2. presentChars — characters the bot confirmed in the new location.
-            // Possessive-safe detection on both sides keeps reference-only mentions out.
-            this.activeSceneChars = [...new Set([...travelingChars, ...presentChars])] as CharacterName[];
-            // Reset absence counts on a scene transition.
-            this.absenceCounts = {};
-        } else {
-            // Normal turn: add newly-detected chars, remove explicitly departed.
-            const allKnownChars = [...new Set([...this.activeSceneChars, ...presentChars])] as CharacterName[];
-            const departedChars = detectDepartedCharacters(content, allKnownChars);
-            const afterDeparture = [...new Set([...this.activeSceneChars, ...presentChars])]
-                .filter(n => !departedChars.includes(n)) as CharacterName[];
-
-            // Absence-based pruning: track how many consecutive turns each active char
-            // has been absent from the bot's response. Prune after ABSENCE_THRESHOLD turns.
-            for (const name of CHARACTERS) {
-                if (presentChars.includes(name)) {
-                    // Character appeared — reset their absence counter.
-                    this.absenceCounts[name] = 0;
-                } else if (afterDeparture.includes(name)) {
-                    // Character is still listed as active but didn't appear this turn.
-                    this.absenceCounts[name] = (this.absenceCounts[name] ?? 0) + 1;
-                }
-            }
-
-            this.activeSceneChars = afterDeparture
-                .filter(n => (this.absenceCounts[n] ?? 0) < ABSENCE_THRESHOLD);
-        }
-
-        // Already-processed chars: named by user OR known in active scene at beforePrompt time.
-        const alreadyProcessed = new Set([...namedChars, ...sceneChars]);
-
-        // Brand-new entrants: detected in response, not already processed.
-        // They get BASE_DELTA — we couldn't apply a content delta before now.
-        const newEntrants = presentChars.filter(n => !alreadyProcessed.has(n));
+        // Characters in the scene that weren't named by the user → apply BASE_DELTA now.
+        const unnamedPresent = presentChars.length > 0
+            ? presentChars.filter(n => !namedChars.includes(n))
+            : CHARACTERS.filter(n => !namedChars.includes(n)); // no detection → all unnamed
 
         const newAffection = { ...this.affection };
-
-        // Merge all applied deltas for the history entry (namedDeltas + sceneDeltas already applied).
         const appliedDeltas: Partial<Record<CharacterName, number>> = { ...namedDeltas };
-        for (const [name, delta] of Object.entries(sceneDeltas) as [CharacterName, number][]) {
-            appliedDeltas[name] = (appliedDeltas[name] ?? 0) + delta;
-        }
 
-        // Apply BASE_DELTA to brand-new entrants now.
-        // Guard: only when a real user message triggered this cycle.
-        // If trigger is null (e.g. the opening bot message), no user input exists
-        // to justify an affection change, so we skip it entirely.
-        if (trigger !== null) {
-            for (const name of newEntrants) {
-                newAffection[name]  = clampAffection(newAffection[name] + BASE_DELTA);
-                appliedDeltas[name] = (appliedDeltas[name] ?? 0) + BASE_DELTA;
-            }
+        for (const name of unnamedPresent) {
+            newAffection[name]   = clampAffection(newAffection[name] + BASE_DELTA);
+            appliedDeltas[name]  = (appliedDeltas[name] ?? 0) + BASE_DELTA;
         }
 
         this.affection = newAffection;
@@ -1178,11 +923,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         return {
             stageDirections: null,
             messageState: {
-                affection:        { ...newAffection },
-                history:          [...this.history],
-                pendingTrigger:   null,
-                activeSceneChars: [...this.activeSceneChars],
-                absenceCounts:    { ...this.absenceCounts },
+                affection:      { ...newAffection },
+                history:        [...this.history],
+                pendingTrigger: null,
             },
             modifiedMessage: null,
             systemMessage,
@@ -1196,33 +939,8 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     // ═══════════════════════════════════════════════════════════
 
     render(): ReactElement {
-        const { affection, history, pendingTrigger, activeSceneChars } = this;
-        const lastEntry  = history.length > 0 ? history[history.length - 1] : null;
-        const hasPending = pendingTrigger !== null;
-
-        // Shared category row renderer (used for both pending and completed entries)
-        const renderCats = (cats: CategoryFire[]) =>
-            cats.length === 0
-                ? <span style={{ color: '#1a3220' }}>none fired</span>
-                : cats.map((c, i) => (
-                    <span key={i} style={{ display: 'inline-block', marginRight: '6px',
-                        color: c.delta > 0 ? '#3aaa58' : '#aa3840', fontWeight: 'bold' }}>
-                        {c.label}
-                        <span style={{ color: c.delta > 0 ? '#2a7a40' : '#7a2830', fontWeight: 'normal' }}>
-                            {` (${c.delta > 0 ? '+' : ''}${c.delta})`}
-                        </span>
-                    </span>
-                ));
-
-        const renderDeltas = (deltas: Partial<Record<CharacterName, number>>) => {
-            const entries = Object.entries(deltas) as [CharacterName, number][];
-            if (entries.length === 0) return <span style={{ color: '#1a3220' }}>no change</span>;
-            return entries.map(([name, delta]) => (
-                <span key={name} style={{ display: 'inline-block', marginRight: '8px', color: deltaColor(delta) }}>
-                    {name} {delta > 0 ? `+${delta.toFixed(2).replace(/\.?0+$/, '')}` : delta.toFixed(2).replace(/\.?0+$/, '')}
-                </span>
-            ));
-        };
+        const { affection, history } = this;
+        const lastEntry = history.length > 0 ? history[history.length - 1] : null;
 
         return (
             <div style={{
@@ -1239,7 +957,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
                 {/* ── Header ── */}
                 <div style={{
-                    fontSize:      '14px',
+                    fontSize:      '7px',
                     color:         '#5c3a18',
                     letterSpacing: '3px',
                     textTransform: 'uppercase',
@@ -1275,7 +993,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                         }}>
                             <span style={{
                                 width:        '68px',
-                                fontSize:     '12px',
+                                fontSize:     '10px',
                                 color:        '#a07840',
                                 letterSpacing:'0.3px',
                                 fontStyle:    'italic',
@@ -1294,7 +1012,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                                 {symbols}
                             </span>
                             <span style={{
-                                fontSize:      '10px',
+                                fontSize:      '7px',
                                 color:         lblClr,
                                 letterSpacing: '0.5px',
                                 textTransform: 'uppercase',
@@ -1305,8 +1023,8 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                                 {tier.name}
                             </span>
                             <span style={{
-                                fontSize:          '12px',
-                                color:             '#d7db20',
+                                fontSize:          '8px',
+                                color:             '#3c2c1c',
                                 minWidth:          '38px',
                                 textAlign:         'right',
                                 fontVariantNumeric:'tabular-nums',
@@ -1330,104 +1048,25 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
                     {/* Debug header */}
                     <div style={{
-                        fontSize:      '12px',
-                        color:         hasPending ? '#2a6a50' : '#1a5a30',
+                        fontSize:      '7px',
+                        color:         '#1a5a30',
                         letterSpacing: '2px',
                         textTransform: 'uppercase',
                         marginBottom:  '6px',
                         paddingBottom: '4px',
                         borderBottom:  '1px solid #0a2218',
                     }}>
-                        {hasPending
-                            ? '⬡ current exchange — awaiting response'
-                            : `⬡ last exchange${lastEntry ? '' : ' — no data yet'}`}
+                        ⬡ last exchange {lastEntry ? '' : '— no data yet'}
                     </div>
 
-                    {/* Debug command reference */}
-                    <div style={{
-                        fontSize:      '10px',
-                        color:         '#1a4a30',
-                        marginBottom:  '6px',
-                        paddingBottom: '5px',
-                        borderBottom:  '1px solid #081810',
-                        lineHeight:    1.7,
-                    }}>
-                        <span style={{ color: '#0e3020', marginRight: '4px' }}>cmd›</span>
-                        {[
-                            '/set [Name|all] <n>',
-                            '/add [Name|all] <n>',
-                            '/reset',
-                        ].map((cmd, i) => (
-                            <span key={i} style={{
-                                display:       'inline-block',
-                                marginRight:   '10px',
-                                color:         '#2a6040',
-                                fontStyle:     'italic',
-                            }}>{cmd}</span>
-                        ))}
-                    </div>
+                    {lastEntry ? (() => {
+                        const deltaEntries = Object.entries(lastEntry.appliedDeltas) as [CharacterName, number][];
+                        const noChange     = deltaEntries.length === 0;
 
-                    {/* ── PENDING: show user message analysis while bot is generating ── */}
-                    {hasPending ? (() => {
-                        const noNamedChange = Object.keys(pendingTrigger!.namedDeltas).length === 0;
                         return (
                             <>
                                 {/* Message excerpt */}
-                                <div style={{ fontSize: '12px', color: '#2a6a40', marginBottom: '4px', lineHeight: 1.4 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>msg›</span>
-                                    <span style={{ color: '#3a8a55', fontStyle: 'italic' }}>
-                                        {pendingTrigger!.messageExcerpt || '—'}
-                                    </span>
-                                </div>
-
-                                {/* Fired categories */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px', lineHeight: 1.6 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>cats›</span>
-                                    {renderCats(pendingTrigger!.globalCategories)}
-                                </div>
-
-                                {/* Active scene chars */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>active›</span>
-                                    {activeSceneChars.length === 0
-                                        ? <span style={{ color: '#1a3220', fontStyle: 'italic' }}>no scene established yet</span>
-                                        : <span style={{ color: '#4a8a60' }}>{activeSceneChars.join(', ')}</span>
-                                    }
-                                    {pendingTrigger!.isSceneTransition && (
-                                        <span style={{ color: '#8a6020', marginLeft: '6px', fontStyle: 'italic' }}>
-                                            ⟳ transition
-                                            {pendingTrigger!.travelingChars.length > 0
-                                                ? ` — traveling: ${pendingTrigger!.travelingChars.join(', ')}`
-                                                : ' — no travelers detected yet'
-                                            }
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Bot scene — not known until bot responds */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>scene›</span>
-                                    <span style={{ color: '#1a3220', fontStyle: 'italic' }}>awaiting response…</span>
-                                </div>
-
-                                {/* Deltas already applied (named + scene, mutually exclusive sets) */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>Δ›</span>
-                                    {(Object.keys(pendingTrigger!.namedDeltas).length === 0 && Object.keys(pendingTrigger!.sceneDeltas).length === 0)
-                                        ? <span style={{ color: '#1a3220' }}>no named or scene chars — Δ pending</span>
-                                        : renderDeltas({ ...pendingTrigger!.namedDeltas, ...pendingTrigger!.sceneDeltas })
-                                    }
-                                </div>
-                            </>
-                        );
-
-                    /* ── COMPLETED: show the last finished exchange ── */
-                    })() : lastEntry ? (() => {
-                        const noChange = Object.keys(lastEntry.appliedDeltas).length === 0;
-                        return (
-                            <>
-                                {/* Message excerpt */}
-                                <div style={{ fontSize: '12px', color: '#2a6a40', marginBottom: '4px', lineHeight: 1.4 }}>
+                                <div style={{ fontSize: '8px', color: '#2a6a40', marginBottom: '4px', lineHeight: 1.4 }}>
                                     <span style={{ color: '#1a4228', marginRight: '4px' }}>msg›</span>
                                     <span style={{ color: '#3a8a55', fontStyle: 'italic' }}>
                                         {lastEntry.messageExcerpt || '—'}
@@ -1435,66 +1074,57 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                                 </div>
 
                                 {/* Fired categories */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px', lineHeight: 1.6 }}>
+                                <div style={{ fontSize: '8px', color: '#2a5a38', marginBottom: '4px', lineHeight: 1.6 }}>
                                     <span style={{ color: '#1a4228', marginRight: '4px' }}>cats›</span>
-                                    {renderCats(lastEntry.globalCategories)}
-                                </div>
-
-                                {/* Active scene — persisted set after this turn */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>active›</span>
-                                    {activeSceneChars.length === 0
-                                        ? <span style={{ color: '#1a3220', fontStyle: 'italic' }}>empty</span>
-                                        : <span style={{ color: '#4a8a60' }}>{activeSceneChars.join(', ')}</span>
+                                    {lastEntry.globalCategories.length === 0
+                                        ? <span style={{ color: '#1a3220' }}>none fired</span>
+                                        : lastEntry.globalCategories.map((c, i) => (
+                                            <span key={i} style={{
+                                                display:     'inline-block',
+                                                marginRight: '6px',
+                                                color:       c.delta > 0 ? '#3aaa58' : '#aa3840',
+                                                fontWeight:  'bold',
+                                            }}>
+                                                {c.label}
+                                                <span style={{
+                                                    color:      c.delta > 0 ? '#2a7a40' : '#7a2830',
+                                                    fontWeight: 'normal',
+                                                }}>
+                                                    {` (${c.delta > 0 ? '+' : ''}${c.delta})`}
+                                                </span>
+                                            </span>
+                                        ))
                                     }
                                 </div>
 
-                                {/* Present — detected in this bot response */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
+                                {/* Present characters */}
+                                <div style={{ fontSize: '8px', color: '#2a5a38', marginBottom: '4px' }}>
                                     <span style={{ color: '#1a4228', marginRight: '4px' }}>scene›</span>
                                     {lastEntry.presentChars.length === 0
-                                        ? <span style={{ color: '#1a3220' }}>none detected in response</span>
+                                        ? <span style={{ color: '#1a3220' }}>none detected — applied to all</span>
                                         : <span style={{ color: '#3a7a48' }}>{lastEntry.presentChars.join(', ')}</span>
                                     }
                                 </div>
 
-                                {/* Applied deltas */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: noChange && lastEntry.tierChanges.length === 0 ? 0 : '4px' }}>
+                                {/* Applied deltas per character */}
+                                <div style={{ fontSize: '8px', color: '#2a5a38', marginBottom: noChange && lastEntry.tierChanges.length === 0 ? 0 : '4px' }}>
                                     <span style={{ color: '#1a4228', marginRight: '4px' }}>Δ›</span>
                                     {noChange
                                         ? <span style={{ color: '#1a3220' }}>no change</span>
-                                        : renderDeltas(lastEntry.appliedDeltas)
+                                        : deltaEntries.map(([name, delta], i) => (
+                                            <span key={name} style={{
+                                                display:     'inline-block',
+                                                marginRight: '8px',
+                                                color:       deltaColor(delta),
+                                            }}>
+                                                {name} {delta > 0 ? `+${delta.toFixed(2).replace(/\.?0+$/, '')}` : delta.toFixed(2).replace(/\.?0+$/, '')}
+                                            </span>
+                                        ))
                                     }
                                 </div>
 
                                 {/* Tier changes, if any */}
                                 {lastEntry.tierChanges.length > 0 && (
-                                    <div style={{ fontSize: '12px', color: '#8a5020', marginTop: '2px' }}>
+                                    <div style={{ fontSize: '8px', color: '#8a5020', marginTop: '2px' }}>
                                         <span style={{ color: '#5a3010', marginRight: '4px' }}>tier›</span>
-                                        {lastEntry.tierChanges.join(' · ')}
-                                    </div>
-                                )}
-                            </>
-                        );
-                    })() : (
-                        <div style={{ fontSize: '8px', color: '#1a3220', fontStyle: 'italic' }}>
-                            Waiting for first exchange…
-                        </div>
-                    )}
-                </div>
-
-                {/* ── Footer ── */}
-                <div style={{
-                    marginTop:     '6px',
-                    paddingTop:    '6px',
-                    borderTop:     '1px solid #1a080f',
-                    fontSize:      '10px',
-                    color:         '#2e1e0e',
-                    textAlign:     'center',
-                    letterSpacing: '1.5px',
-                    textTransform: 'uppercase',
-                }}>
-                    The Below · base +{BASE_DELTA}/msg · max gain +{MAX_DELTA + BASE_DELTA}
-                </div>
-            </div>)}}
-    
+              
