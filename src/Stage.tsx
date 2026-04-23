@@ -423,7 +423,7 @@ const CATEGORIES: KeywordCategory[] = [
             /\bnice to (?:see|meet) you\b/i,
             /\bglad (?:to see you|you(?:'re| are) here|you came)\b/i,
             /\bhappy (?:to see you|you(?:'re| are) here|you came)\b/i,
-            /\bsmile(?:s)?\b/i,
+            /\bsmil(?:es|ing)?\b/i,
             /\bhug(?:s|ged|ging)?\b/i,
            // /\b\b/i,
 
@@ -661,7 +661,7 @@ function computeNamedDeltas(text: string): {
 
         namedChars.push(name);
 
-        const WINDOW = 200;
+        const WINDOW = 300;
         const ranges: [number, number][] = matches.map(m => [
             Math.max(0, m.index!),
             Math.min(text.length, m.index! + name.length + WINDOW),
@@ -701,9 +701,17 @@ function detectPresentCharacters(text: string): CharacterName[] {
 /**
  * Departure cues — patterns checked in a context window around each character's name.
  * A character is only considered departed if their name appears AND a nearby cue fires.
+ *
+ * NOTE: "left" is NOT included in the bare-verb list because it also appears as a
+ * directional adjective ("Malivorn's left", "his left eyebrow") and would fire false
+ * positives. Instead, two specific sub-patterns cover the verb usage only.
  */
 const DEPARTURE_PATTERNS: RegExp[] = [
-    /\b(?:left|departs?|departed|exits?|exited|withdrew|retreated|vanished|dismissed)\b/i,
+    /\b(?:departs?|departed|exits?|exited|withdrew|retreated|vanished|dismissed)\b/i,
+    // "left" as a departure verb — requires either a location object or a manner adverb.
+    /\bleft (?:the (?:room|chamber|hall(?:way)?|scene|throne room|study|corridor|gallery|courtyard|area|citadel)|without|abruptly|quietly|suddenly|silently)\b/i,
+    // "he/she/they left" — subject-verb form with no location required.
+    /\b(?:he|she|they|it)\s+left\b/i,
     /\bwalks? (?:away|out|toward the door|to the door)\b/i,
     /\bturns? and (?:leaves?|left|goes?|went)\b/i,
     /\bleaves? (?:the (?:room|chamber|hall|scene|throne room|study|corridor)|without)\b/i,
@@ -821,12 +829,6 @@ function tierLabelColor(tier: Tier): string {
 function renderSymbols(tier: Tier): string {
     const ch = tier.type === 'green' ? '●' : '♥';
     return Array(tier.symbols).fill(ch).join(' ');
-}
-
-function deltaColor(delta: number): string {
-    if (delta > 0) return '#3aaa5a';
-    if (delta < 0) return '#aa3a4a';
-    return '#4a4a4a';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1127,9 +1129,30 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         // They get BASE_DELTA — we couldn't apply a content delta before now.
         const newEntrants = presentChars.filter(n => !alreadyProcessed.has(n));
 
-        const newAffection = { ...this.affection };
+        // ── SWIPE-SAFE affection computation ────────────────────────────────
+        // We always recompute from the clean pre-exchange snapshot (affectionBefore)
+        // rather than from this.affection.  This makes the result identical whether
+        // setState was called with beforePrompt's state OR afterResponse's state:
+        //   • Normal flow: affectionBefore = pre-change (set at start of beforePrompt)
+        //     → named + scene deltas were also applied to this.affection in beforePrompt;
+        //       reapplying them here from affectionBefore gives the same final value.
+        //   • Swipe where setState received the post-change afterResponse state:
+        //     this.affection may already include the previous round's deltas, but
+        //     affectionBefore is stored in pendingTrigger and is always the correct
+        //     snapshot — so recomputing from it produces the right result regardless.
+        const newAffection: Record<CharacterName, number> = { ...affectionBefore };
 
-        // Merge all applied deltas for the history entry (namedDeltas + sceneDeltas already applied).
+        // Apply named-character deltas (computed in beforePrompt).
+        for (const [name, delta] of Object.entries(namedDeltas) as [CharacterName, number][]) {
+            newAffection[name] = clampAffection(newAffection[name] + delta);
+        }
+
+        // Apply active-scene deltas (computed in beforePrompt for unnamed scene chars).
+        for (const [name, delta] of Object.entries(sceneDeltas) as [CharacterName, number][]) {
+            newAffection[name] = clampAffection(newAffection[name] + delta);
+        }
+
+        // Merge all applied deltas for the history entry.
         const appliedDeltas: Partial<Record<CharacterName, number>> = { ...namedDeltas };
         for (const [name, delta] of Object.entries(sceneDeltas) as [CharacterName, number][]) {
             appliedDeltas[name] = (appliedDeltas[name] ?? 0) + delta;
@@ -1196,7 +1219,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
     // ═══════════════════════════════════════════════════════════
 
     render(): ReactElement {
-        const { affection, history, pendingTrigger, activeSceneChars } = this;
+        const { affection } = this;
+        // history, pendingTrigger, activeSceneChars — used by debug panel (commented out)
+        /* DEBUG PANEL HELPERS — commented out while debug panel is hidden
         const lastEntry  = history.length > 0 ? history[history.length - 1] : null;
         const hasPending = pendingTrigger !== null;
 
@@ -1223,6 +1248,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                 </span>
             ));
         };
+        END DEBUG PANEL HELPERS */
 
         return (
             <div style={{
@@ -1318,183 +1344,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                     );
                 })}
 
-                {/* ── Debug Panel ── */}
-                <div style={{
-                    marginTop:    '8px',
-                    padding:      '7px 8px',
-                    background:   'rgba(0,220,150,0.03)',
-                    border:       '1px solid #0a2218',
-                    borderRadius: '3px',
-                    fontFamily:   '"Courier New", Courier, monospace',
-                }}>
+                {/* Debug Panel — commented out (restore from git history) */}
 
-                    {/* Debug header */}
-                    <div style={{
-                        fontSize:      '12px',
-                        color:         hasPending ? '#2a6a50' : '#1a5a30',
-                        letterSpacing: '2px',
-                        textTransform: 'uppercase',
-                        marginBottom:  '6px',
-                        paddingBottom: '4px',
-                        borderBottom:  '1px solid #0a2218',
-                    }}>
-                        {hasPending
-                            ? '⬡ current exchange — awaiting response'
-                            : `⬡ last exchange${lastEntry ? '' : ' — no data yet'}`}
-                    </div>
-
-                    {/* Debug command reference */}
-                    <div style={{
-                        fontSize:      '10px',
-                        color:         '#1a4a30',
-                        marginBottom:  '6px',
-                        paddingBottom: '5px',
-                        borderBottom:  '1px solid #081810',
-                        lineHeight:    1.7,
-                    }}>
-                        <span style={{ color: '#0e3020', marginRight: '4px' }}>cmd›</span>
-                        {[
-                            '/set [Name|all] <n>',
-                            '/add [Name|all] <n>',
-                            '/reset',
-                        ].map((cmd, i) => (
-                            <span key={i} style={{
-                                display:       'inline-block',
-                                marginRight:   '10px',
-                                color:         '#2a6040',
-                                fontStyle:     'italic',
-                            }}>{cmd}</span>
-                        ))}
-                    </div>
-
-                    {/* ── PENDING: show user message analysis while bot is generating ── */}
-                    {hasPending ? (() => {
-                        const noNamedChange = Object.keys(pendingTrigger!.namedDeltas).length === 0;
-                        return (
-                            <>
-                                {/* Message excerpt */}
-                                <div style={{ fontSize: '12px', color: '#2a6a40', marginBottom: '4px', lineHeight: 1.4 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>msg›</span>
-                                    <span style={{ color: '#3a8a55', fontStyle: 'italic' }}>
-                                        {pendingTrigger!.messageExcerpt || '—'}
-                                    </span>
-                                </div>
-
-                                {/* Fired categories */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px', lineHeight: 1.6 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>cats›</span>
-                                    {renderCats(pendingTrigger!.globalCategories)}
-                                </div>
-
-                                {/* Active scene chars */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>active›</span>
-                                    {activeSceneChars.length === 0
-                                        ? <span style={{ color: '#1a3220', fontStyle: 'italic' }}>no scene established yet</span>
-                                        : <span style={{ color: '#4a8a60' }}>{activeSceneChars.join(', ')}</span>
-                                    }
-                                    {pendingTrigger!.isSceneTransition && (
-                                        <span style={{ color: '#8a6020', marginLeft: '6px', fontStyle: 'italic' }}>
-                                            ⟳ transition
-                                            {pendingTrigger!.travelingChars.length > 0
-                                                ? ` — traveling: ${pendingTrigger!.travelingChars.join(', ')}`
-                                                : ' — no travelers detected yet'
-                                            }
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Bot scene — not known until bot responds */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>scene›</span>
-                                    <span style={{ color: '#1a3220', fontStyle: 'italic' }}>awaiting response…</span>
-                                </div>
-
-                                {/* Deltas already applied (named + scene, mutually exclusive sets) */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>Δ›</span>
-                                    {(Object.keys(pendingTrigger!.namedDeltas).length === 0 && Object.keys(pendingTrigger!.sceneDeltas).length === 0)
-                                        ? <span style={{ color: '#1a3220' }}>no named or scene chars — Δ pending</span>
-                                        : renderDeltas({ ...pendingTrigger!.namedDeltas, ...pendingTrigger!.sceneDeltas })
-                                    }
-                                </div>
-                            </>
-                        );
-
-                    /* ── COMPLETED: show the last finished exchange ── */
-                    })() : lastEntry ? (() => {
-                        const noChange = Object.keys(lastEntry.appliedDeltas).length === 0;
-                        return (
-                            <>
-                                {/* Message excerpt */}
-                                <div style={{ fontSize: '12px', color: '#2a6a40', marginBottom: '4px', lineHeight: 1.4 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>msg›</span>
-                                    <span style={{ color: '#3a8a55', fontStyle: 'italic' }}>
-                                        {lastEntry.messageExcerpt || '—'}
-                                    </span>
-                                </div>
-
-                                {/* Fired categories */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px', lineHeight: 1.6 }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>cats›</span>
-                                    {renderCats(lastEntry.globalCategories)}
-                                </div>
-
-                                {/* Active scene — persisted set after this turn */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>active›</span>
-                                    {activeSceneChars.length === 0
-                                        ? <span style={{ color: '#1a3220', fontStyle: 'italic' }}>empty</span>
-                                        : <span style={{ color: '#4a8a60' }}>{activeSceneChars.join(', ')}</span>
-                                    }
-                                </div>
-
-                                {/* Present — detected in this bot response */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>scene›</span>
-                                    {lastEntry.presentChars.length === 0
-                                        ? <span style={{ color: '#1a3220' }}>none detected in response</span>
-                                        : <span style={{ color: '#3a7a48' }}>{lastEntry.presentChars.join(', ')}</span>
-                                    }
-                                </div>
-
-                                {/* Applied deltas */}
-                                <div style={{ fontSize: '12px', color: '#2a5a38', marginBottom: noChange && lastEntry.tierChanges.length === 0 ? 0 : '4px' }}>
-                                    <span style={{ color: '#1a4228', marginRight: '4px' }}>Δ›</span>
-                                    {noChange
-                                        ? <span style={{ color: '#1a3220' }}>no change</span>
-                                        : renderDeltas(lastEntry.appliedDeltas)
-                                    }
-                                </div>
-
-                                {/* Tier changes, if any */}
-                                {lastEntry.tierChanges.length > 0 && (
-                                    <div style={{ fontSize: '12px', color: '#8a5020', marginTop: '2px' }}>
-                                        <span style={{ color: '#5a3010', marginRight: '4px' }}>tier›</span>
-                                        {lastEntry.tierChanges.join(' · ')}
-                                    </div>
-                                )}
-                            </>
-                        );
-                    })() : (
-                        <div style={{ fontSize: '8px', color: '#1a3220', fontStyle: 'italic' }}>
-                            Waiting for first exchange…
-                        </div>
-                    )}
-                </div>
-
-                {/* ── Footer ── */}
-                <div style={{
-                    marginTop:     '6px',
-                    paddingTop:    '6px',
-                    borderTop:     '1px solid #1a080f',
-                    fontSize:      '10px',
-                    color:         '#2e1e0e',
-                    textAlign:     'center',
-                    letterSpacing: '1.5px',
-                    textTransform: 'uppercase',
-                }}>
-                    The Below · base +{BASE_DELTA}/msg · max gain +{MAX_DELTA + BASE_DELTA}
-                </div>
+                {/* Footer — commented out */}
             </div>)}}
-    
