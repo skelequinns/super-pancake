@@ -214,10 +214,21 @@ function renderSymbols(tier: Tier): string {
  * Build the affection stats block appended to the bot's message each turn.
  * Affection is rounded to whole numbers for display; internal tracking stays fractional.
  * Format (italic, one character per line, separated from narrative by ---):
- *   *Name | symbols | Tier | rounded_value*
+ *   *Name | Tier | rounded_value*
+ *
+ * Only characters identified as being in the current scene are shown.
+ * Falls back to all characters when activeSceneChars is empty (e.g. session start).
+ *
+ * Raw affection values for ALL characters (including absent ones) are always
+ * persisted in messageState.affection and accessible via the /status command.
  */
-function generateStatsBlock(affection: Record<CharacterName, number>): string {
-    const lines = CHARACTERS.map(name => {
+function generateStatsBlock(
+    affection:        Record<CharacterName, number>,
+    activeSceneChars: CharacterName[],
+): string {
+    // Show all characters only if scene detection hasn't fired yet (turn 1 / empty scene).
+    const charsToShow = activeSceneChars.length > 0 ? activeSceneChars : CHARACTERS;
+    const lines = charsToShow.map(name => {
         const tier  = getTier(affection[name]);
         const value = Math.round(affection[name]);
         return `*${name} | ${tier.name} | ${value}*`;
@@ -846,9 +857,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                 lilithMinAffection:     this.lilithMinAffection,
                 pendingMilestonePrompt: this.pendingMilestonePrompt,
             },
-            // Append rounded affection stats to every bot message.
-            // Internal affection values remain fractional for precise tracking.
-            modifiedMessage: generateStatsBlock(newAffection) + content,
+            // Append rounded affection stats to every bot message — scene characters only.
+            // Full affection for all characters is persisted in messageState regardless.
+            modifiedMessage: generateStatsBlock(newAffection, this.activeSceneChars) + content,
             systemMessage,
             error:           null,
             chatState:       null,
