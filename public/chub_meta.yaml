@@ -5,11 +5,7 @@
 project_name: "Infernal Otome Engine"
 
 # A short tagline to show in search.
-<<<<<<< HEAD
-tagline: "An Otome Engine for the Below and its voracious rulers."
-=======
 tagline: "An Otome Engine for the Below and its voracious Nobility."
->>>>>>> origin/main
 
 # 'PUBLIC', 'PRIVATE', or 'UNLISTED'.
 visibility: 'UNLISTED'
@@ -22,7 +18,7 @@ visibility: 'UNLISTED'
 #   but leave the text input box.
 # 'FULLSCREEN' will make nothing below the header bar
 #   show except for your stage.
-position: 'ADJACENT'
+position: 'NONE'
 
 # Self-explanatory.
 tags:

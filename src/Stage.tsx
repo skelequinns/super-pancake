@@ -896,12 +896,11 @@ function renderSymbols(tier: Tier): string {
  */
 function generateStatsBlock(affection: Record<CharacterName, number>): string {
     const lines = CHARACTERS.map(name => {
-        const tier    = getTier(affection[name]);
-        const symbols = renderSymbols(tier);
-        const value   = Math.round(affection[name]);
-        return `*${name} | ${symbols} | ${tier.name} | ${value}*`;
+        const tier  = getTier(affection[name]);
+        const value = Math.round(affection[name]);
+        return `*${name} | ${tier.name} | ${value}*`;
     });
-    return '\n\n---\n' + lines.join('\n');
+    return lines.join('\n') + '\n\n---\n\n';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1283,7 +1282,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             },
             // Append rounded affection stats to every bot message.
             // Internal affection values remain fractional for precise tracking.
-            modifiedMessage: content + generateStatsBlock(newAffection),
+            modifiedMessage: generateStatsBlock(newAffection) + content,
             systemMessage,
             error:           null,
             chatState:       null,
