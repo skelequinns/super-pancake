@@ -1252,16 +1252,20 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
         return (
             <div style={{
-                width:         '100vw',
-                height:        '100vh',
-                background:    'linear-gradient(160deg, #09010d 0%, #0f020f 55%, #090112 100%)',
+                width:         '100%',
+                background:    'transparent',
                 display:       'flex',
                 flexDirection: 'column',
-                padding:       '10px 8px 8px',
-                boxSizing:     'border-box',
                 fontFamily:    '"Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif',
-                overflowY:     'auto',
             }}>
+                <div style={{
+                    background:    'linear-gradient(160deg, #09010d 0%, #0f020f 55%, #090112 100%)',
+                    padding:       '10px 8px 8px',
+                    boxSizing:     'border-box',
+                    borderRadius:  '4px',
+                    display:       'flex',
+                    flexDirection: 'column',
+                }}>
 
                 {/* ── Header ── */}
                 <div style={{
@@ -1347,4 +1351,5 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                 {/* Debug Panel — commented out (restore from git history) */}
 
                 {/* Footer — commented out */}
+                </div>
             </div>)}}
