@@ -85,17 +85,17 @@ interface PendingTrigger {
 const CHARACTERS: CharacterName[] = ['Malivorn', 'Asmodeus', 'Lilith', 'Beelzebub', 'Mammon'];
 
 const STARTING_AFFECTION: Record<CharacterName, number> = {
-    Malivorn:  101,
-    Asmodeus:   51,
-    Lilith:     25,
+    Malivorn:   80,
+    Asmodeus:   35,
+    Lilith:    -24,
     Beelzebub:   0,
-    Mammon:    -10,
+    Mammon:      0,
 };
 
 const AFFECTION_MIN   = -250;
 const AFFECTION_MAX   =  250;
-const MAX_DELTA       =    2;    // hard cap per character per message
-const BASE_DELTA      =    0.25; // applied to every present character every message
+const MAX_DELTA       =    5;    // hard cap on final delta (after multipliers + base) per character per message
+const BASE_DELTA      =    0.5;  // applied to every present character every message
 const MAX_HISTORY     =   50;    // entries kept in messageState
 const ABSENCE_THRESHOLD = 2;    // consecutive absent bot responses before a char is pruned from activeSceneChars
 
@@ -452,7 +452,7 @@ const CATEGORIES: KeywordCategory[] = [
         ],
     },
     {
-        name: 'vulnerability', label: 'Vulnerable', delta: 2,
+        name: 'vulnerability', label: 'Vulnerable', delta: 1,
         // No excludes — fear and pain are affection-relevant even in hostile messages.
         patterns: [
             /\b(?:i'?m |i am |i feel |i'?ve been )(?:so |really |terribly )?scared\b/i,
@@ -536,6 +536,73 @@ const CATEGORIES: KeywordCategory[] = [
         ],
     },
 ];
+
+// ═══════════════════════════════════════════════════════════════
+//  CHARACTER-SPECIFIC CATEGORY MULTIPLIERS
+//  Applied only to named-character interactions (not scene bucket).
+//  Each value scales the base category delta for that character.
+//  Multipliers reflect each character's canonical personality:
+//    Malivorn — easiest to gain points with (already drawn to {{user}})
+//    Mammon   — most difficult (stern, analytical, guards affection closely)
+// ═══════════════════════════════════════════════════════════════
+
+const CHAR_MULTIPLIERS: Record<CharacterName, Record<string, number>> = {
+    Malivorn: {
+        rude:           0.5,
+        dismissive:     2.5,
+        romantic:       2.5,
+        compliment:     2.0,
+        friendly:       1.0,
+        vulnerability:  2.0,
+        asking_about:   2.0,
+        humor:          1.0,
+        reconciliation: 2.0,
+    },
+    Asmodeus: {
+        rude:           0.75,
+        dismissive:     2.0,
+        romantic:       1.0,
+        compliment:     2.0,
+        friendly:       1.0,
+        vulnerability:  0.75,
+        asking_about:   2.0,
+        humor:          1.0,
+        reconciliation: 1.0,
+    },
+    Lilith: {
+        rude:           2.0,
+        dismissive:     2.0,
+        romantic:       1.5,
+        compliment:     2.0,
+        friendly:       0.75,
+        vulnerability:  1.0,
+        asking_about:   1.5,
+        humor:          1.0,
+        reconciliation: 1.0,
+    },
+    Beelzebub: {
+        rude:           1.0,
+        dismissive:     2.0,
+        romantic:       2.0,
+        compliment:     0.75,
+        friendly:       1.0,
+        vulnerability:  2.5,
+        asking_about:   1.0,
+        humor:          2.0,
+        reconciliation: 2.0,
+    },
+    Mammon: {
+        rude:           2.5,
+        dismissive:     2.5,
+        romantic:       1.0,
+        compliment:     1.0,
+        friendly:       1.0,
+        vulnerability:  1.5,
+        asking_about:   2.0,
+        humor:          1.5,
+        reconciliation: 2.0,
+    },
+};
 
 // ═══════════════════════════════════════════════════════════════
 //  DEBUG COMMAND PARSING
@@ -642,9 +709,14 @@ function analyzeText(text: string): AnalysisResult {
 
 /**
  * Compute affection deltas ONLY for characters explicitly named in the user's message.
- * Uses the same multi-window context analysis as computeDeltas(), but skips characters
- * that weren't mentioned — those only ever receive BASE_DELTA (in afterResponse, once
- * we know which characters are actually present in the bot's scene).
+ * Uses a per-character context window so only sentiment near the character's name scores.
+ *
+ * For each named character, per-category multipliers from CHAR_MULTIPLIERS are applied
+ * to each fired category's delta before summing. BASE_DELTA is added last, and the
+ * complete total is then clamped to ±MAX_DELTA.
+ *
+ * Characters not named here receive only BASE_DELTA (in afterResponse, once we know
+ * who is actually in the scene) with no multiplier applied.
  */
 function computeNamedDeltas(text: string): {
     deltas:     Partial<Record<CharacterName, number>>;
@@ -679,9 +751,18 @@ function computeNamedDeltas(text: string): {
             }
         }
 
-        const context = merged.map(([s, e]) => text.slice(s, e)).join(' … ');
-        const result  = analyzeText(context);
-        deltas[name]  = clampDelta(result.totalDelta) + BASE_DELTA;
+        const context      = merged.map(([s, e]) => text.slice(s, e)).join(' … ');
+        const result       = analyzeText(context);
+        const multipliers  = CHAR_MULTIPLIERS[name];
+
+        // Apply per-character multiplier to each fired category, then sum.
+        let multipliedSum = 0;
+        for (const cat of result.firedCategories) {
+            multipliedSum += cat.delta * (multipliers[cat.name] ?? 1);
+        }
+
+        // Add BASE_DELTA last, then clamp the complete final total to ±MAX_DELTA.
+        deltas[name] = clampDelta(multipliedSum + BASE_DELTA);
     }
 
     return { deltas, namedChars };
@@ -792,43 +873,34 @@ function generateStageDirections(affection: Record<CharacterName, number>): stri
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  UI HELPERS
+//  HELPERS
 // ═══════════════════════════════════════════════════════════════
 
+/** Format affection value with sign for stage directions (LLM-facing, retains decimals). */
 function fmtVal(v: number): string {
-    // Show integers cleanly; show up to 2 decimal places for fractional values
     const r = Math.round(v * 100) / 100;
     const s = r % 1 === 0 ? r.toString() : r.toFixed(2);
     return r >= 0 ? `+${s}` : s;
 }
 
-function tierAccentColor(tier: Tier): string {
-    if (tier.type === 'black') return '#5a2a5a';
-    if (tier.type === 'green') return '#2a5a3a';
-    return '#7a1a2a';
-}
-
-function tierGlowColor(tier: Tier): string {
-    if (tier.type === 'black') return 'rgba(90,42,90,0.25)';
-    if (tier.type === 'green') return 'rgba(42,90,58,0.25)';
-    return 'rgba(122,26,42,0.3)';
-}
-
-function symbolColor(tier: Tier): string {
-    if (tier.type === 'black') return '#6a3a6a';
-    if (tier.type === 'green') return '#52a86a';
-    return '#c03048';
-}
-
-function tierLabelColor(tier: Tier): string {
-    if (tier.type === 'black') return '#7a4a7a';
-    if (tier.type === 'green') return '#3a7a4a';
-    return '#9a2838';
-}
-
 function renderSymbols(tier: Tier): string {
     const ch = tier.type === 'green' ? '●' : '♥';
     return Array(tier.symbols).fill(ch).join(' ');
+}
+
+/**
+ * Build the affection stats block appended to the bot's message each turn.
+ * Affection is rounded to whole numbers for display; internal tracking stays fractional.
+ * Format (italic, one character per line, separated from narrative by ---):
+ *   *Name | symbols | Tier | rounded_value*
+ */
+function generateStatsBlock(affection: Record<CharacterName, number>): string {
+    const lines = CHARACTERS.map(name => {
+        const tier  = getTier(affection[name]);
+        const value = Math.round(affection[name]);
+        return `*${name} | ${tier.name} | ${value}*`;
+    });
+    return lines.join('\n') + '\n\n---\n\n';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1001,7 +1073,8 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
         // Global analysis — what categories fired across the full message (debug display).
         const globalResult      = analyzeText(content);
-        const globalDelta       = clampDelta(globalResult.totalDelta);
+        // Scene chars receive no multipliers; clamp their total (keyword sum + base) to ±MAX_DELTA.
+        const sceneBaseDelta    = clampDelta(globalResult.totalDelta + BASE_DELTA);
         const isSceneTransition = detectSceneTransition(content);
         // On a transition, capture who's named in the user's message (possessive-safe) as
         // the 'traveling party' — carried into afterResponse to seed the rebuilt scene.
@@ -1021,12 +1094,12 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         // Active-scene chars not named by the user → apply the global content delta now.
         // These characters are known to be in the scene from prior bot responses, so the
         // player's message is implicitly addressed to them even without explicit naming.
+        // No per-character multipliers for the scene bucket — only named interactions get them.
         const sceneOnlyChars = this.activeSceneChars.filter(n => !namedChars.includes(n));
         const sceneDeltas: Partial<Record<CharacterName, number>> = {};
         for (const name of sceneOnlyChars) {
-            const delta = globalDelta + BASE_DELTA;
-            sceneDeltas[name] = delta;
-            this.affection[name] = clampAffection(this.affection[name] + delta);
+            sceneDeltas[name] = sceneBaseDelta;
+            this.affection[name] = clampAffection(this.affection[name] + sceneBaseDelta);
         }
 
         // Build pendingTrigger — persisted in messageState so it survives swipes.
@@ -1207,7 +1280,9 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
                 activeSceneChars: [...this.activeSceneChars],
                 absenceCounts:    { ...this.absenceCounts },
             },
-            modifiedMessage: null,
+            // Append rounded affection stats to every bot message.
+            // Internal affection values remain fractional for precise tracking.
+            modifiedMessage: generateStatsBlock(newAffection) + content,
             systemMessage,
             error:           null,
             chatState:       null,
@@ -1216,140 +1291,11 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
     // ═══════════════════════════════════════════════════════════
     //  RENDER
+    //  Stats are appended directly to the bot's message via
+    //  modifiedMessage in afterResponse — no sidebar UI needed.
     // ═══════════════════════════════════════════════════════════
 
     render(): ReactElement {
-        const { affection } = this;
-        // history, pendingTrigger, activeSceneChars — used by debug panel (commented out)
-        /* DEBUG PANEL HELPERS — commented out while debug panel is hidden
-        const lastEntry  = history.length > 0 ? history[history.length - 1] : null;
-        const hasPending = pendingTrigger !== null;
-
-        // Shared category row renderer (used for both pending and completed entries)
-        const renderCats = (cats: CategoryFire[]) =>
-            cats.length === 0
-                ? <span style={{ color: '#1a3220' }}>none fired</span>
-                : cats.map((c, i) => (
-                    <span key={i} style={{ display: 'inline-block', marginRight: '6px',
-                        color: c.delta > 0 ? '#3aaa58' : '#aa3840', fontWeight: 'bold' }}>
-                        {c.label}
-                        <span style={{ color: c.delta > 0 ? '#2a7a40' : '#7a2830', fontWeight: 'normal' }}>
-                            {` (${c.delta > 0 ? '+' : ''}${c.delta})`}
-                        </span>
-                    </span>
-                ));
-
-        const renderDeltas = (deltas: Partial<Record<CharacterName, number>>) => {
-            const entries = Object.entries(deltas) as [CharacterName, number][];
-            if (entries.length === 0) return <span style={{ color: '#1a3220' }}>no change</span>;
-            return entries.map(([name, delta]) => (
-                <span key={name} style={{ display: 'inline-block', marginRight: '8px', color: deltaColor(delta) }}>
-                    {name} {delta > 0 ? `+${delta.toFixed(2).replace(/\.?0+$/, '')}` : delta.toFixed(2).replace(/\.?0+$/, '')}
-                </span>
-            ));
-        };
-        END DEBUG PANEL HELPERS */
-
-        return (
-            <div style={{
-                width:         '100%',
-                background:    'transparent',
-                display:       'flex',
-                flexDirection: 'column',
-                fontFamily:    '"Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif',
-            }}>
-                <div style={{
-                    background:    'linear-gradient(160deg, #09010d 0%, #0f020f 55%, #090112 100%)',
-                    padding:       '10px 8px 8px',
-                    boxSizing:     'border-box',
-                    borderRadius:  '4px',
-                    display:       'flex',
-                    flexDirection: 'column',
-                }}>
-
-                {/* ── Header ── */}
-                <div style={{
-                    fontSize:      '14px',
-                    color:         '#5c3a18',
-                    letterSpacing: '3px',
-                    textTransform: 'uppercase',
-                    textAlign:     'center',
-                    marginBottom:  '8px',
-                    paddingBottom: '6px',
-                    borderBottom:  '1px solid #1a080f',
-                }}>
-                    ✦ &nbsp;Infernal Court&nbsp; ✦
-                </div>
-
-                {/* ── Character rows ── */}
-                {CHARACTERS.map(name => {
-                    const value   = affection[name];
-                    const tier    = getTier(value);
-                    const accent  = tierAccentColor(tier);
-                    const glow    = tierGlowColor(tier);
-                    const symClr  = symbolColor(tier);
-                    const lblClr  = tierLabelColor(tier);
-                    const symbols = renderSymbols(tier);
-                    const valStr  = fmtVal(value);
-
-                    return (
-                        <div key={name} style={{
-                            display:      'flex',
-                            alignItems:   'center',
-                            padding:      '5px 8px 5px 7px',
-                            marginBottom: '4px',
-                            borderLeft:   `2px solid ${accent}`,
-                            background:   `linear-gradient(90deg, ${glow} 0%, transparent 65%)`,
-                            borderRadius: '0 3px 3px 0',
-                            gap:          '5px',
-                        }}>
-                            <span style={{
-                                width:        '68px',
-                                fontSize:     '12px',
-                                color:        '#a07840',
-                                letterSpacing:'0.3px',
-                                fontStyle:    'italic',
-                                flexShrink:   0,
-                                whiteSpace:   'nowrap',
-                            }}>
-                                {name}
-                            </span>
-                            <span style={{
-                                flex:          1,
-                                fontSize:      '12px',
-                                color:         symClr,
-                                letterSpacing: '5px',
-                                lineHeight:    1,
-                            }}>
-                                {symbols}
-                            </span>
-                            <span style={{
-                                fontSize:      '10px',
-                                color:         lblClr,
-                                letterSpacing: '0.5px',
-                                textTransform: 'uppercase',
-                                minWidth:      '72px',
-                                textAlign:     'right',
-                                whiteSpace:    'nowrap',
-                            }}>
-                                {tier.name}
-                            </span>
-                            <span style={{
-                                fontSize:          '12px',
-                                color:             '#d7db20',
-                                minWidth:          '38px',
-                                textAlign:         'right',
-                                fontVariantNumeric:'tabular-nums',
-                                fontFamily:        '"Courier New", monospace',
-                            }}>
-                                {valStr}
-                            </span>
-                        </div>
-                    );
-                })}
-
-                {/* Debug Panel — commented out (restore from git history) */}
-
-                {/* Footer — commented out */}
-                </div>
-            </div>)}}
+        return <div style={{ display: 'none' }} />;
+    }
+}
