@@ -700,24 +700,8 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         const sceneDeltas           = trigger?.sceneDeltas           ?? {};
         const isSceneTransition     = trigger?.isSceneTransition     ?? false;
         const travelingChars        = trigger?.travelingChars        ?? [];
-        const isOOC                 = trigger?.isOOC                 ?? false;
 
-        // Strip the [SENTIMENT] block before scene detection — character names inside the
-        // block would otherwise cause false-positive scene membership.
-        // Wrapped in try/catch so a malformed block can never crash the stage.
-        let content  = rawContent;
-        let sentiment: Partial<Record<CharacterName, string>> = {};
-        if (!isOOC) {
-            try {
-                const parsed = parseSentimentBlock(rawContent);
-                content      = parsed.cleaned;
-                sentiment    = parsed.sentiment;
-            } catch {
-                // Parsing failed — proceed with raw content and no sentiment.
-                content  = rawContent;
-                sentiment = {};
-            }
-        }
+        const content = rawContent;
 
         // affectionBefore = snapshot taken in beforePrompt (before ANY deltas this exchange).
         const affectionBefore = trigger?.affectionBefore ?? { ...this.affection };
