@@ -18,7 +18,7 @@ import {
     CHAR_MULTIPLIERS,
 } from './constants';
 import { CategoryFire, analyzeText, computeNamedDeltas } from './keywords';
-import { detectPresentCharacters, detectDepartedCharacters, detectSceneTransition } from './sceneDetection';
+import { detectPresentCharacters, detectMentionedCharacters, detectDepartedCharacters, detectSceneTransition } from './sceneDetection';
 
 // ═══════════════════════════════════════════════════════════════
 //  TYPES
@@ -690,7 +690,7 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
      * Builds the full AnalysisHistoryEntry, commits it to history, and clears pendingTrigger.
      */
     async afterResponse(botMessage: Message): Promise<Partial<StageResponse<ChatStateType, MessageStateType>>> {
-        const { content } = botMessage;
+        const rawContent            = botMessage.content ?? '';
 
         const trigger               = this.pendingTrigger;
         const namedChars            = trigger?.namedChars            ?? [];
@@ -698,8 +698,26 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         const namedCharCategories   = trigger?.namedCharCategories   ?? {};
         const sceneChars            = trigger?.sceneChars            ?? [];
         const sceneDeltas           = trigger?.sceneDeltas           ?? {};
-        const isSceneTransition = trigger?.isSceneTransition ?? false;
-        const travelingChars    = trigger?.travelingChars    ?? [];
+        const isSceneTransition     = trigger?.isSceneTransition     ?? false;
+        const travelingChars        = trigger?.travelingChars        ?? [];
+        const isOOC                 = trigger?.isOOC                 ?? false;
+
+        // Strip the [SENTIMENT] block before scene detection — character names inside the
+        // block would otherwise cause false-positive scene membership.
+        // Wrapped in try/catch so a malformed block can never crash the stage.
+        let content  = rawContent;
+        let sentiment: Partial<Record<CharacterName, string>> = {};
+        if (!isOOC) {
+            try {
+                const parsed = parseSentimentBlock(rawContent);
+                content      = parsed.cleaned;
+                sentiment    = parsed.sentiment;
+            } catch {
+                // Parsing failed — proceed with raw content and no sentiment.
+                content  = rawContent;
+                sentiment = {};
+            }
+        }
 
         // affectionBefore = snapshot taken in beforePrompt (before ANY deltas this exchange).
         const affectionBefore = trigger?.affectionBefore ?? { ...this.affection };
@@ -725,12 +743,18 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
 
             // Absence-based pruning: track how many consecutive turns each active char
             // has been absent from the bot's response. Prune after ABSENCE_THRESHOLD turns.
+            //
+            // IMPORTANT: use detectMentionedCharacters (possessive-inclusive) for the
+            // reset check — not detectPresentCharacters (possessive-safe). A character
+            // referenced as "Beelzebub's chair" or "Mammon's pen" is clearly present;
+            // treating them as absent would cause spurious pruning after two such turns.
+            const mentionedChars = detectMentionedCharacters(content);
             for (const name of CHARACTERS) {
-                if (presentChars.includes(name)) {
-                    // Character appeared — reset their absence counter.
+                if (mentionedChars.includes(name)) {
+                    // Character was mentioned (even possessively) — reset their absence counter.
                     this.absenceCounts[name] = 0;
                 } else if (afterDeparture.includes(name)) {
-                    // Character is still listed as active but didn't appear this turn.
+                    // Character is still listed as active but wasn't mentioned at all this turn.
                     this.absenceCounts[name] = (this.absenceCounts[name] ?? 0) + 1;
                 }
             }

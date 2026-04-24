@@ -57,10 +57,28 @@ const SCENE_TRANSITION_PATTERNS: RegExp[] = [
  * Detect which of the five characters appear by name in a text string.
  * Possessive-only mentions ("Beelzebub's rooms") are excluded — the name must
  * appear at least once NOT immediately followed by a possessive apostrophe-s.
+ *
+ * Used for: stats block display, affection scoring, scene membership.
  */
 export function detectPresentCharacters(text: string): CharacterName[] {
     return CHARACTERS.filter(name =>
         new RegExp(`\\b${name}\\b(?!['\\u2019]s\\b)`, 'i').test(text)
+    );
+}
+
+/**
+ * Detect which characters are mentioned anywhere in a text string,
+ * including possessive references ("Beelzebub's chair", "Mammon's pen").
+ *
+ * Used for: absence-count resets ONLY.
+ * A possessive mention proves the character is still in the scene —
+ * the narrative simply chose to reference them through their belongings or attributes.
+ * This prevents characters from being incorrectly pruned when they appear
+ * exclusively in possessive form across consecutive turns.
+ */
+export function detectMentionedCharacters(text: string): CharacterName[] {
+    return CHARACTERS.filter(name =>
+        new RegExp(`\\b${name}\\b`, 'i').test(text)
     );
 }
 
