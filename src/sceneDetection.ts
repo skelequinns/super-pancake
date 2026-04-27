@@ -115,25 +115,3 @@ export function detectDepartedCharacters(text: string, chars: CharacterName[]): 
 export function detectSceneTransition(text: string): boolean {
     return SCENE_TRANSITION_PATTERNS.some(p => p.test(text));
 }
-ioned → can't confirm departure
-
-        for (const match of matches) {
-            const start   = Math.max(0, match.index! - WINDOW);
-            const end     = Math.min(text.length, match.index! + name.length + WINDOW);
-            const context = text.slice(start, end);
-            if (DEPARTURE_PATTERNS.some(p => p.test(context))) {
-                departed.push(name);
-                break;
-            }
-        }
-    }
-    return departed;
-}
-
-/**
- * Returns true if the user's message describes leaving the current scene
- * and moving to a new location — signal to wipe activeSceneChars.
- */
-export function detectSceneTransition(text: string): boolean {
-    return SCENE_TRANSITION_PATTERNS.some(p => p.test(text));
-}
