@@ -37,12 +37,24 @@ const DEPARTURE_PATTERNS: RegExp[] = [
 const SCENE_TRANSITION_PATTERNS: RegExp[] = [
     // Leading / escorting away from somewhere
     /\b(?:leads?|takes?|escorts?|guides?|walks?) (?:her|him|them|me|us) (?:from|out of|away from)\b/i,
+    // Leading / escorting / bringing TOWARD somewhere — covers bot-narrated transitions
+    // like "Malivorn led her down the corridor to her chambers".
+    // Past-tense and present-tense forms; broad set of directional prepositions.
+    /\b(?:leads?|led|takes?|took|escorts?|escorted|walks?|walked|guides?|guided|brings?|brought)\s+(?:her|him|them|me|us)\s+(?:to|down|through|along|across|toward|towards|into|back to|up to)\b/i,
+    // User-initiated requests to be taken somewhere
+    // ("show me my chambers", "take me to the garden", "walk me back").
+    /\b(?:show|take|walk|escort|lead|bring)\s+me\s+(?:to|back to|home|out|down|up|through)\b/i,
     // Explicit departure from a named space
     /\b(?:leaves?|left|exits?|exited|departs?|departed) (?:the |a )?(?:room|chamber|hall(?:way)?|throne room|scene|corridor|courtyard|study|gallery|citadel)\b/i,
     // "from the [location]" — leaving a named space
     /\bfrom the (?:throne room|great hall|main hall|audience chamber|council chamber|chamber|room|hall(?:way)?|corridor|gallery|courtyard)\b/i,
     // Moving into a clearly new location
     /\binto (?:the |a )(?:hall(?:way)?|corridor|chamber|passage|wing|gallery|courtyard|citadel|keep|anteroom)\b/i,
+    // Arriving at someone's private space — "to her chambers", "outside his door", etc.
+    // The possessive (her/his/their) + private-space noun is a strong transition signal.
+    /\b(?:to|outside|inside|reach(?:ing|ed)?|arriv(?:ing|ed)? at|entered?|entering)\s+(?:her|his|their|the)\s+(?:chambers?|quarters|suite|wing|study|annex|doorway)\b/i,
+    // At the threshold — pausing outside a door before entering
+    /\bat (?:her|his|their|the) (?:door|threshold|chamber door)\b/i,
     // Following someone out
     /\b(?:follows?|followed) (?:him|her|them) (?:out|away|through the door|into)\b/i,
     // Generic walk-away

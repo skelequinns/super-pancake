@@ -622,8 +622,17 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         // Active-scene chars not named by the user → apply the global content delta now.
         // These characters are known to be in the scene from prior bot responses, so the
         // player's message is implicitly addressed to them even without explicit naming.
+        //
+        // IMPORTANT: gate by absenceCounts === 0. A character only gets the scene-bucket
+        // delta on turns where they actually appeared in the *previous* bot response.
+        // Once they've started missing turns (absenceCount >= 1 but still below
+        // ABSENCE_THRESHOLD), they remain "in scene" for prune purposes but stop accruing
+        // affection — otherwise stale members of a multi-character scene continue farming
+        // points during private follow-up moments with a single character.
         // No per-character multipliers for the scene bucket — only named interactions get them.
-        const sceneOnlyChars = this.activeSceneChars.filter(n => !namedChars.includes(n));
+        const sceneOnlyChars = this.activeSceneChars.filter(n =>
+            !namedChars.includes(n) && (this.absenceCounts[n] ?? 0) === 0
+        );
         const sceneDeltas: Partial<Record<CharacterName, number>> = {};
         for (const name of sceneOnlyChars) {
             sceneDeltas[name] = sceneBaseDelta;
@@ -709,13 +718,22 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
         // Characters mentioned by name in the bot's response (possessive-safe).
         const presentChars = detectPresentCharacters(content);
 
-        if (isSceneTransition) {
+        // Bot-narrated transitions are extremely common in this format
+        // ("Malivorn led her down the corridor to her chambers"). The user's message
+        // alone often doesn't describe the move, so we re-check the bot's response.
+        const botInitiatedTransition = !isSceneTransition && detectSceneTransition(content);
+
+        if (isSceneTransition || botInitiatedTransition) {
             // Scene transition: wipe and rebuild from two sources:
             //   1. travelingChars — characters the user named (possessive-safe) in their
             //      transition message; they're clearly moving with {{user}}.
+            //      (Only relevant when the user initiated the transition.)
             //   2. presentChars — characters the bot confirmed in the new location.
             // Possessive-safe detection on both sides keeps reference-only mentions out.
-            this.activeSceneChars = [...new Set([...travelingChars, ...presentChars])] as CharacterName[];
+            const seedChars = isSceneTransition
+                ? [...travelingChars, ...presentChars]
+                : [...presentChars];
+            this.activeSceneChars = [...new Set(seedChars)] as CharacterName[];
             // Reset absence counts on a scene transition.
             this.absenceCounts = {};
         } else {
