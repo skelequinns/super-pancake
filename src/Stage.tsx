@@ -733,13 +733,21 @@ export class Stage extends StageBase<InitStateType, ChatStateType, MessageStateT
             // referenced as "Beelzebub's chair" or "Mammon's pen" is clearly present;
             // treating them as absent would cause spurious pruning after two such turns.
             const mentionedChars = detectMentionedCharacters(content);
-            for (const name of CHARACTERS) {
-                if (mentionedChars.includes(name)) {
-                    // Character was mentioned (even possessively) — reset their absence counter.
-                    this.absenceCounts[name] = 0;
-                } else if (afterDeparture.includes(name)) {
-                    // Character is still listed as active but wasn't mentioned at all this turn.
-                    this.absenceCounts[name] = (this.absenceCounts[name] ?? 0) + 1;
+
+            // Only update absence counts when the bot actually names at least one character.
+            // If the response uses pronouns only (mentionedChars is empty), the LLM is
+            // writing a pronoun-focused scene — preserve the current scene composition
+            // rather than incrementing absence counters and potentially pruning valid
+            // characters who are clearly still present but never named by the narrator.
+            if (mentionedChars.length > 0) {
+                for (const name of CHARACTERS) {
+                    if (mentionedChars.includes(name)) {
+                        // Character was mentioned (even possessively) — reset their absence counter.
+                        this.absenceCounts[name] = 0;
+                    } else if (afterDeparture.includes(name)) {
+                        // Character is still listed as active but wasn't mentioned at all this turn.
+                        this.absenceCounts[name] = (this.absenceCounts[name] ?? 0) + 1;
+                    }
                 }
             }
 
